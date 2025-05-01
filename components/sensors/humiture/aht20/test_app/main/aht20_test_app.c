@@ -3,9 +3,9 @@
  *
  * @brief: AHT20 driver unity test app
  *
- * @Date: April 20, 2025
+ * @Date: May 1, 2025
  *
- * Copyright 2025 Rohan Jeet <jeetrohan92@gmail.com>
+ * @Author: Rohan Jeet <jeetrohan92@gmail.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,25 +21,33 @@
  */
 
 #include <stdio.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include <inttypes.h>
+
 #include "unity.h"
+
 #include "esp_system.h"
+#include "esp_log.h"
+
 #include "aht20.h"
 
 
-// I2C config
-#define I2C_MASTER_SCL_IO       22
-#define I2C_MASTER_SDA_IO       21
-#define I2C_MASTER_NUM          I2C_NUM_0
-#define I2C_MASTER_FREQ_HZ      400000
 
-// Global handles
+#define TEST_MEMORY_LEAK_THRESHOLD (-400)
+
+#define I2C_MASTER_SCL_IO   CONFIG_I2C_MASTER_SCL   /*!< gpio number for I2C master clock */
+#define I2C_MASTER_SDA_IO   CONFIG_I2C_MASTER_SDA   /*!< gpio number for I2C master data  */
+#define I2C_MASTER_NUM      I2C_NUM_0               /*!< I2C port number for master dev */
+#define I2C_MASTER_FREQ_HZ  100000                  /*!< I2C master clock frequency */
+
 i2c_master_bus_handle_t my_i2c_bus_handle = NULL;
-aht20_handle_t aht20_handle = NULL;
+static aht20_handle_t aht20_handle = NULL;
 
-void i2c_master_init(void)
+/**
+ * @brief i2c master initialization
+ */
+static void i2c_bus_init(void)
 {
+
     i2c_master_bus_config_t i2c_mst_config = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .i2c_port = I2C_MASTER_NUM,
@@ -50,69 +58,82 @@ void i2c_master_init(void)
     };
 
     printf("Requesting I2C bus handle\n");
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &my_i2c_bus_handle));
+    TEST_ASSERT_EQUAL_MESSAGE(ESP_OK, i2c_new_master_bus(&i2c_mst_config, &my_i2c_bus_handle),
+                              "I2C master bus handle, failure to acquire");
     printf("I2C bus handle acquired\n");
+
 }
 
-void aht20_init_test()
+static void i2c_sensor_ath20_init(void)
 {
-    i2c_master_init();
     aht20_handle = aht20_create(my_i2c_bus_handle, AHT20_ADDRESS_LOW);
+    TEST_ASSERT_NOT_NULL_MESSAGE(aht20_handle, "AHT20 create returned NULL");
 
     printf("Initializing AHT20 sensor\n");
     while (aht20_init(aht20_handle) != ESP_OK) {
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
     printf("AHT20 initialized\n");
+
 }
 
-void aht20_deinit_test(void)
+void i2c_sensor_ath20_deinit(void)
 {
-    aht20_remove(&aht20_handle);
+    aht20_delete(&aht20_handle);
+    TEST_ASSERT_EQUAL(ESP_OK, i2c_del_master_bus(my_i2c_bus_handle));
 }
 
-void aht20_read_test(void)
+TEST_CASE("sensor aht20 test", "[aht20][iot][sensor]")
 {
+
+    i2c_bus_init();
+    i2c_sensor_ath20_init();
+
     vTaskDelay(400 / portTICK_PERIOD_MS);
 
-    for (int i = 0; i < 5; i++) {
-        if (aht20_read_humiture(aht20_handle) == ESP_OK) {
-            printf("Temperature = %.2f°C, Humidity = %.3f%%\n",
-                   aht20_handle->humiture.temperature,
-                   aht20_handle->humiture.humidity);
-        } else {
-            printf("Failed to read data from AHT20 sensor\n");
-        }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
+    TEST_ASSERT(ESP_OK == aht20_read_humiture(aht20_handle));
+
+    printf("Temperature = %.2f°C, Humidity = %.3f%%\n",
+           aht20_handle->humiture.temperature,
+           aht20_handle->humiture.humidity);
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+    //to get reaw values create a object of following data type
+    aht20_raw_reading_t raw_value;
+    aht20_read_raw(aht20_handle, &raw_value);
+
+    printf("raw tempertature = %luC  raw humidity = %lu \n", raw_value.temperature, raw_value.humidity);
+
+    aht20_delete(&aht20_handle);
+    TEST_ASSERT_EQUAL(ESP_OK, i2c_del_master_bus(my_i2c_bus_handle));
 }
 
+static size_t before_free_8bit;
+static size_t before_free_32bit;
 
-TEST_CASE("AHT20 Init", "[aht20][init]")
+static void check_leak(size_t before_free, size_t after_free, const char *type)
 {
-    TEST_ASSERT_NULL(aht20_handle);
-    aht20_init_test();
+    ssize_t delta = after_free - before_free;
+    printf("MALLOC_CAP_%s: Before %u bytes free, After %u bytes free (delta %d)\n", type, before_free, after_free, delta);
+    TEST_ASSERT_MESSAGE(delta >= TEST_MEMORY_LEAK_THRESHOLD, "memory leak");
 }
 
-TEST_CASE("AHT20 Read", "[aht20][read]")
+void setUp(void)
 {
-    TEST_ASSERT_NOT_NULL(aht20_handle);
-
-    aht20_read_test();
+    before_free_8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    before_free_32bit = heap_caps_get_free_size(MALLOC_CAP_32BIT);
 }
 
-TEST_CASE("AHT20 Deinit", "[aht20][deinit]")
+void tearDown(void)
 {
-    TEST_ASSERT_NOT_NULL(aht20_handle);
-
-    aht20_deinit_test();
-    TEST_ASSERT_NULL(aht20_handle);
-
-    printf("AHT20 deinitialized\n");
+    size_t after_free_8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t after_free_32bit = heap_caps_get_free_size(MALLOC_CAP_32BIT);
+    check_leak(before_free_8bit, after_free_8bit, "8BIT");
+    check_leak(before_free_32bit, after_free_32bit, "32BIT");
 }
 
 void app_main(void)
 {
-    printf("\n=== AHT20 Sensor Test Menu ===\n");
-    unity_run_menu();  // Run test selection menu in flash monitor
+    printf("AHT20 TEST \n");
+    unity_run_menu();
 }
