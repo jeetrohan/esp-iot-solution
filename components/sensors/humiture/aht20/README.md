@@ -2,7 +2,7 @@
 I2C driver for Aosong AHT20 humidity and temperature sensor using esp-idf.
 Tested with AHT20 using ESP32 and ESP32-S3 devkits.
 
-#Features
+# Features
 
     Temperature and humidity measurement
 
